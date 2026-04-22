@@ -1,14 +1,10 @@
-import 'dart:convert';
-import 'dart:math';
-
-import 'package:cw_core/output_info.dart';
 import 'package:cw_core/pending_transaction.dart';
+import 'package:cw_core/utils/print_verbose.dart';
 import 'package:cw_zcash/cw_zcash.dart';
 import 'package:cw_core/currency_for_wallet_type.dart';
 import 'package:cw_core/wallet_type.dart';
-import 'package:cw_zcash/src/zcash_taddress_rotation.dart';
-import 'package:warp_api/data_fb_generated.dart';
-import 'package:warp_api/warp_api.dart';
+import 'package:zkool/src/rust/api/pay.dart' as zkool_pay;
+import 'package:zkool/src/rust/api/network.dart' as zkool_network;
 
 class PendingZcashTransaction with PendingTransaction {
   PendingZcashTransaction({
@@ -21,7 +17,7 @@ class PendingZcashTransaction with PendingTransaction {
 
   final ZcashWallet zcashWallet;
   final ZcashTransactionCredentials credentials;
-  final String txPlan;
+  final zkool_pay.PcztPackage txPlan;
   String? _txId;
   final int availableBalance;
 
@@ -60,35 +56,15 @@ class PendingZcashTransaction with PendingTransaction {
 
   @override
   Future<void> commit() async {
-    _txId = await ZcashWalletService.runInDbMutex(
-      () => WarpApi.signAndBroadcast(ZcashWalletBase.coin, zcashWallet.accountId, txPlan),
+    final signTx = await zkool_pay.signTransaction(pczt: txPlan, c: ZcashWalletBase.c);
+    final txBytes = await zkool_pay.extractTransaction(package: signTx);
+    final currentHeight = await zkool_network.getCurrentHeight(c: ZcashWalletBase.c);
+    final result = await zkool_pay.broadcastTransaction(
+      height: currentHeight,
+      txBytes: txBytes,
+      c: ZcashWalletBase.c,
     );
-    ZcashWalletBase.temporarySentTx[zcashWallet.accountId] ??= [];
-    ZcashWalletBase.temporarySentTx[zcashWallet.accountId]?.add(
-      ShieldedTx(
-        base64.decode(
-          ZcashTaddressRotation.flatBuffersPack(
-            ShieldedTxT(
-              id: Random().nextInt(pow(2, 32).toInt()),
-              txId: _txId,
-              height: 0,
-              timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
-              value: -totalAmount,
-            ).pack,
-          ),
-        ),
-      ),
-    );
-    await ZcashTransactionInfo.addCachedDestinationAddress(
-      _txId ?? '',
-      credentials.outputs.reduce((final o1, final o2) {
-        return OutputInfo(
-          address: o1.address + "," + o2.address,
-          sendAll: false,
-          isParsedAddress: false,
-        );
-      }).address,
-    );
+    printV("result: $result");
     await zcashWallet.updateTransactions();
     await zcashWallet.updateBalance();
   }

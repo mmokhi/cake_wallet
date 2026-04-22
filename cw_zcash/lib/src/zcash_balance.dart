@@ -14,17 +14,6 @@ class ZcashBalance extends Balance {
   BigInt get frozen => BigInt.from(_frozen);
 
   @override
-  String get formattedAvailableBalance {
-    return CryptoCurrency.zec.formatAmount(BigInt.from(confirmed));
-  }
-
-  @override
-  String get formattedAdditionalBalance {
-    if (unconfirmed == 0) return '0.0';
-    return CryptoCurrency.zec.formatAmount(BigInt.from(unconfirmed));
-  }
-
-  @override
   String get formattedUnAvailableBalance {
     if (frozen == 0) return '';
     return CryptoCurrency.zec.formatAmount(BigInt.from(_frozen));
