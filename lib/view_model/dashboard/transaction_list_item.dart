@@ -66,8 +66,13 @@ class TransactionListItem extends ActionListItem with Keyable {
   }
 
   String get formattedTitle {
-    if (transaction.additionalInfo['autoShield'] == true) {
-      return "Autoshield";
+    if (transaction.additionalInfo['isAutoShield'] == true) {
+      if (transaction.isPending) {
+        final status = formattedStatus;
+        final baseString = S.current.shielding;
+        return status.isNotEmpty ? "$baseString $status" : "$baseString...";
+      }
+      return S.current.shielding;
     }
     if (transaction.isPending) {
       final status = formattedStatus;
