@@ -211,7 +211,7 @@ class ZcashTaddressRotation {
       return;
     }
 
-    final amt = 25 + (rotationAddresses[c.account]?.length??0) - (rotationAddressesUsable[c.account]?.length??0);
+    final amt = 5 + (rotationAddresses[c.account]?.length??0) - (rotationAddressesUsable[c.account]?.length??0);
     await ZcashWalletBase.runWithCoinMutex.acquire();
     final cId = c.account;
     ZcashWalletBase.runWithCoinMutex.release();
@@ -257,6 +257,7 @@ class ZcashTaddressRotation {
       for (int j = 0; j < details.outputs.length; j++) {
         final out = details.outputs[j];
         rotationAddressesUsable[cId]?.removeWhere((final a) => a == out.address);
+        printV("removed address: ${out.address} count: ${rotationAddressesUsable[cId]?.length}");
       }
     }
     await serializeToFile();

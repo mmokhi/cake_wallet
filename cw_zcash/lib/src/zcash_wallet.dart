@@ -206,13 +206,26 @@ abstract class ZcashWalletBase
     syncStatus = SyncingSyncStatus(blocksLeft, ptc);
   }
 
+  Future<int> _getWalletDbHeight() async {
+    try {
+      return (await zkool_sync.getDbHeight(c: c)).height;
+    } catch (_) {
+      final accounts = await zkool_account.listAccounts(c: c);
+      final account = accounts.where((final a) => a.id == accountId).firstOrNull;
+      if (account != null) {
+        return account.height;
+      }
+      rethrow;
+    }
+  }
+
   @action
   Future<void> _refreshSyncStatus() async {
     try {
       c = await c.setAccount(account: accountId);
       final currentHeight = await zkool_network.getCurrentHeight(c: c);
-      final dbHeightResult = await zkool_sync.getDbHeight(c: c);
-      _applySyncProgress(currentHeight, dbHeightResult.height);
+      final walletDbHeight = await _getWalletDbHeight();
+      _applySyncProgress(currentHeight, walletDbHeight);
     } catch (e) {
       printV("refresh sync status: $e");
     }
@@ -228,10 +241,10 @@ abstract class ZcashWalletBase
       isSyncing = true;
       c = await c.setAccount(account: accountId);
       final currentHeight = await zkool_network.getCurrentHeight(c: c);
-      final dbHeightResult = await zkool_sync.getDbHeight(c: c);
-      final blocksLeft = currentHeight - dbHeightResult.height;
+      final walletDbHeight = await _getWalletDbHeight();
+      final blocksLeft = currentHeight - walletDbHeight;
       if (blocksLeft <= 0) {
-        dbHeight = dbHeightResult.height;
+        dbHeight = walletDbHeight;
         if (syncStatus is! SyncedSyncStatus) {
           syncStatus = SyncedSyncStatus();
         }
@@ -243,7 +256,7 @@ abstract class ZcashWalletBase
       final accountList = accounts.map((final a) => a.id).toList()
         ..removeWhere((final a) => a == c.account);
       c = await c.setAccount(account: accountId);
-      _applySyncProgress(currentHeight, dbHeightResult.height);
+      _applySyncProgress(currentHeight, walletDbHeight);
       final sync = zkool_sync.synchronize(
         accounts: [c.account, ...accountList, c.account],
         currentHeight: currentHeight,
@@ -251,7 +264,7 @@ abstract class ZcashWalletBase
         transparentLimit: 100,
         checkpointAge: 200,
         c: c,
-        fast: true,
+        fast: false,
       );
       c = await c.setAccount(account: accountId);
       final randInt = CRC32.compute("${DateTime.now().microsecondsSinceEpoch}").toRadixString(16);
