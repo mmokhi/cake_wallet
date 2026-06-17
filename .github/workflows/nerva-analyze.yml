@@ -1,0 +1,241 @@
+name: nerva build (faithful pr_test_build_linux)
+
+# CI-ONLY (nerva-ci, never the PR branch). This runs cake's own
+# .github/workflows/pr_test_build_linux.yml build, so a green here means
+# "cake's Linux CI would pass with Nerva." It deviates from upstream ONLY where
+# fork + public runner + pre-merge forces it, each marked DEVIATION:
+#   1. trigger: push to nerva-ci (upstream: pull_request)
+#   2. runner: GitHub-hosted ubuntu-latest (upstream: self-hosted [Linux, amd64, forlinux])
+#   3. secrets: empty stubs (no access to cake's real keys; compilation unaffected)
+#   4. monero_c: prepare_moneroc clones the nerva fork so its per-coin patch
+#      loop (which now includes nerva) can run apply_patches.sh nerva before
+#      monero_c#188 merges. The monero dart dep is overridden to the fork in
+#      pubspec_base.yaml on this branch only. Like upstream, no coin's native
+#      lib is built from source here -- desktop linux bundles only monero and
+#      wownero (not zano, not nerva); nerva's .so is covered by monero_c's own
+#      per-platform CI.
+#   5. container: upstream runs the job inside cake's container. A hosted runner
+#      can't pull that image onto its default 21G disk (the bundled Android SDK
+#      images overflow it), so we point Docker at the runner's larger /mnt volume
+#      and run the same image with the same command sequence via docker exec.
+#      Same toolchain, same steps; only the host plumbing changes.
+# Everything else is verbatim from upstream.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [nerva-ci]
+
+env:
+  IMAGE: ghcr.io/cake-tech/cake_wallet:debian13-flutter3.32.0-ndkr28-go1.24.1-ruststablenightly
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  PR_test_build:
+    runs-on: ubuntu-latest                                   # DEVIATION 2
+    steps:
+      - name: Give Docker the big /mnt disk                  # DEVIATION 5
+        run: |
+          set -x
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift || true
+          sudo systemctl stop docker docker.socket || sudo service docker stop || true
+          sudo mkdir -p /mnt/docker
+          echo '{"data-root":"/mnt/docker"}' | sudo tee /etc/docker/daemon.json
+          sudo rm -rf /var/lib/docker
+          sudo systemctl start docker || sudo service docker start
+          sleep 3
+          docker info | grep -i "docker root dir" || true
+          df -h /mnt
+
+      - uses: actions/checkout@v4
+
+      - name: Start cake container                           # DEVIATION 5
+        run: |
+          set -x -e
+          docker pull "$IMAGE"
+          docker run -d --name cw \
+            -v "$GITHUB_WORKSPACE":/w -w /w \
+            -e HOME=/root \
+            -e STORE_PASS=test@cake_wallet \
+            -e KEY_PASS=test@cake_wallet \
+            -e MONEROC_CACHE_DIR_ROOT=/opt/generic_cache \
+            -e BRANCH_NAME="${{ github.ref_name }}" \
+            -e DESKTOP_FORCE_MOBILE=Y \
+            "$IMAGE" tail -f /dev/null
+          docker exec cw git config --global --add safe.directory '*'
+          docker exec cw git config --global user.email "ci@cakewallet.com"
+          docker exec cw git config --global user.name "CakeWallet CI"
+
+      - name: Build (cake pr_test_build_linux, inside container)
+        run: |
+          cat > ci_build.sh <<'SCRIPT'
+          set -e
+
+          echo "::group::Confirm flutter + Go on PATH"
+          # The image ENV already exposes these (FLUTTER_HOME/bin + go bin) and we
+          # invoke this script with a non-login shell so that PATH survives; re-add
+          # as a safety net in case something trimmed it.
+          command -v flutter >/dev/null 2>&1 || \
+            export PATH="$PATH:${FLUTTER_HOME}/bin:${FLUTTER_HOME}/bin/cache/dart-sdk/bin"
+          export PATH="$PATH:/usr/local/go/bin:/root/go/bin:$HOME/go/bin"
+          echo "flutter=$(command -v flutter || echo MISSING) dart=$(command -v dart || echo MISSING)"
+          if ! command -v gomobile >/dev/null 2>&1; then
+            echo "gomobile not preinstalled in image; installing"
+            go install golang.org/x/mobile/cmd/gomobile@latest
+            go install golang.org/x/mobile/cmd/gobind@latest
+            gomobile init || true
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Add secrets"                        # DEVIATION 3 (stubs)
+          # The real CI decodes a base64 MAIN_SECRETS_FILE we don't have, and
+          # generate_new_secrets.dart needs pub get (encrypt/hex) which hasn't run.
+          # Derive the full root constant set from secret_key.dart plus every
+          # secrets.* referenced in lib/, and stub each as an empty string.
+          {
+            grep -hoE "SecretKey\('[A-Za-z0-9_]+'" tool/utils/secret_key.dart \
+              | sed -E "s/.*\('([A-Za-z0-9_]+)'/\1/"
+            grep -rhoE '\bsecrets\.[A-Za-z_][A-Za-z0-9_]*' lib/ | sed 's/secrets\.//'
+          } | sort -u | while read -r n; do echo "const $n = '';"; done > lib/.secrets.g.dart
+          for p in cw_bitcoin cw_evm cw_solana cw_core cw_nano cw_tron; do
+            mkdir -p "$p/lib"; touch "$p/lib/.secrets.g.dart"
+          done
+          {
+            echo "const polygonScanApiKey = '';"
+            echo "const etherScanApiKey = '';"
+            echo "const moralisApiKey = '';"
+            echo "const blinkApiKey = '';"
+            echo "const nowNodesApiKey = '';"
+          } >> cw_evm/lib/.secrets.g.dart
+          {
+            echo "const ankrApiKey = '';"
+            echo "const chainStackApiKey = '';"
+            echo "const moralisApiKey = '';"
+          } >> cw_solana/lib/.secrets.g.dart
+          {
+            echo "const nano2ApiKey = '';"
+            echo "const nanoNowNodesApiKey = '';"
+          } >> cw_nano/lib/.secrets.g.dart
+          {
+            echo "const tronGridApiKey = '';"
+            echo "const tronNowNodesApiKey = '';"
+          } >> cw_tron/lib/.secrets.g.dart
+          echo "const breezApiKey = '';" >> cw_bitcoin/lib/.secrets.g.dart
+          echo "::endgroup::"
+
+          echo "::group::Fetch prebuilt Torch"
+          set -x
+          pushd scripts
+            wget https://github.com/MrCyjaneK/torch_dart/releases/download/v1.0.17/torch_dart-v1.0.17.tar.gz -O torch_dart.tar.gz
+            mkdir torch_dart
+            pushd torch_dart
+              tar -xzf ../torch_dart.tar.gz
+            popd
+            rm ./torch_dart.tar.gz
+          popd
+          set +x
+          echo "::endgroup::"
+
+          echo "::group::Fetch prebuilt Reown"
+          set -x
+          pushd scripts
+            rm -rf reown_flutter
+            rm -f reown_flutter.tar.gz
+            wget https://github.com/cake-tech/reown_flutter/releases/download/v0.0.4/reown_flutter-v0.0.4.tar.gz -O reown_flutter.tar.gz
+            mkdir reown_flutter
+            pushd reown_flutter
+              tar -xzf ../reown_flutter.tar.gz
+            popd
+            rm ./reown_flutter.tar.gz
+          popd
+          set +x
+          echo "::endgroup::"
+
+          echo "::group::Build Zcash Lib"
+          set -x
+          pushd scripts/linux
+            ./build_zcash.sh
+          popd
+          set +x
+          echo "::endgroup::"
+
+          echo "::group::Build Bitbox Flutter"
+          set -x
+          pushd scripts
+            ./build_bitbox_flutter.sh
+          popd
+          set +x
+          echo "::endgroup::"
+
+          echo "::group::Build monero_c"                     # DEVIATION 4
+          set -x
+          ./scripts/prepare_moneroc.sh
+          mkdir -p scripts/monero_c/release
+          pushd scripts/monero_c
+            TAG=$(git describe --tags)
+            mkdir -p "release/$TAG"
+            pushd "release/$TAG"
+              wget https://github.com/MrCyjaneK/monero_c/releases/download/v0.18.4.6-RC2/release-bundle.zip
+              unzip release-bundle.zip
+              shopt -s nullglob
+              for inner in v0.18.4.6-*/; do mv "$inner"* .; rmdir "$inner"; done
+              shopt -u nullglob
+              rm release-bundle.zip
+            popd
+          popd
+          set +x
+          echo "::endgroup::"
+
+          echo "::group::Execute Build and Setup Commands"
+          pushd scripts/linux
+            source ./app_env.sh cakewallet
+            ./app_config.sh
+          popd
+          echo "::endgroup::"
+
+          echo "::group::Install Flutter dependencies"
+          flutter pub get
+          echo "::endgroup::"
+
+          echo "::group::Build mwebd"
+          set -x
+          export MWEBD_HASH=$(cat scripts/android/build_mwebd.sh | grep 'git reset --hard' | xargs | awk '{ print $4 }')
+          echo MWEBD_HASH=$MWEBD_HASH >> /etc/environment
+          pushd scripts/android
+            ./build_mwebd.sh
+          popd
+          set +x
+          echo "::endgroup::"
+
+          echo "::group::Build generated code"
+          ./model_generator.sh async
+          echo "::endgroup::"
+
+          echo "::group::Generate localization"
+          dart run tool/generate_localization.dart
+          echo "::endgroup::"
+
+          echo "::group::Workaround zcash"
+          mkdir -p scripts/zcash_lib/assets/
+          touch scripts/zcash_lib/assets/sapling-spend.params
+          touch scripts/zcash_lib/assets/sapling-output.params
+          echo "::endgroup::"
+
+          echo "::group::Build linux"
+          flutter build linux --dart-define=hasDevOptions=true --release
+          echo "::endgroup::"
+
+          echo "::group::Verify lint"
+          env ABORT_ON_CHANGE=true ./scripts/lint.sh
+          echo "::endgroup::"
+          SCRIPT
+          docker exec cw bash -c 'cd /w && bash ci_build.sh'
+
+      - name: Stop cake container
+        if: always()
+        run: docker rm -f cw || true

@@ -187,6 +187,13 @@ dev_dependencies:
   msix: ^3.16.9
 
 dependency_overrides:
+  # CI-ONLY (nerva-ci): pin monero to the fork so nerva.dart resolves before the
+  # monero_c PR merges. NOT on the PR branch; bindings are identical to upstream.
+  monero:
+    git:
+      url: https://github.com/mmokhi/monero_c.git
+      ref: a0140d5d56f8fcfe6786c85b5e3073d91abe9df5
+      path: impls/monero.dart
   bech32:
     git:
       url: https://github.com/cake-tech/bech32.git

@@ -37,6 +37,14 @@ dev_dependencies:
 
 dependency_overrides:
   watcher: ^1.1.0
+  # CI-ONLY (nerva-ci): cw_nerva's standalone pub get (model_generator.sh) needs
+  # package:monero/nerva.dart, which only exists in the fork until monero_c#188
+  # merges. The root dependency_overrides does not reach per-package resolution.
+  monero:
+    git:
+      url: https://github.com/mmokhi/monero_c.git
+      ref: a0140d5d56f8fcfe6786c85b5e3073d91abe9df5
+      path: impls/monero.dart
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
